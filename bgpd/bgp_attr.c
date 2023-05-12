@@ -56,6 +56,9 @@
 #include "bgp_flowspec_private.h"
 #include "bgp_mac.h"
 
+DEFINE_MTYPE_STATIC(BGPD, BGP_EXTRA_INFO_REMOTE, "remote BGP extra info for compute gw project");
+DEFINE_MTYPE_STATIC(BGPD, COMPUTE_NODE_INFO_REMOTE, "remote compute node info for compute gw project");
+
 /* Attribute strings for logging. */
 static const struct message attr_str[] = {
 	{BGP_ATTR_ORIGIN, "ORIGIN"},
@@ -81,6 +84,7 @@ static const struct message attr_str[] = {
 #endif
 	{BGP_ATTR_LARGE_COMMUNITIES, "LARGE_COMMUNITY"},
 	{BGP_ATTR_PREFIX_SID, "PREFIX_SID"},
+	{BGP_ATTR_COMPUTE_GW, "COMPUTE_GW"},
 	{BGP_ATTR_IPV6_EXT_COMMUNITIES, "IPV6_EXT_COMMUNITIES"},
 	{0}};
 
@@ -1454,6 +1458,146 @@ static bool bgp_attr_flag_invalid(struct bgp_attr_parser_args *args)
 
 	bgp_attr_flags_diagnose(args, attr_flags_values[attr_code]);
 	return true;
+}
+
+/* static func for COMPUTE GW */
+static void cn_free(struct bgp_compute_node *cn_ptr) {
+	if (cn_ptr->next) {
+		cn_free(cn_ptr->next);
+	}
+	XFREE(MTYPE_COMPUTE_NODE_INFO_REMOTE, cn_ptr);
+	return;
+}
+
+static void be_save(char* remote_ip) {
+	FILE *fp = NULL;
+	struct bgp_extra_info *be_ptr;
+	struct bgp_compute_node *cn_ptr;
+	char ip_str[INET6_ADDRSTRLEN];
+	/* save update to file for EXrt_syncd */
+	fp = fopen("/tmp/enhancedgw", "w");
+	if (fp) {
+		be_ptr = be_others;
+		while(be_ptr) {
+			fprintf(fp,"router-id %s nexthop %s remote_ip %s\n",be_ptr->comp_list_name, be_ptr->nexthop, remote_ip);
+			cn_ptr = be_ptr->cn_head;
+			while(cn_ptr) {
+				memset(ip_str, 0, sizeof(char) * INET6_ADDRSTRLEN);
+				if (cn_ptr->is_ipv6) {
+					inet_ntop(AF_INET6, &cn_ptr->ipv6.s6_addr, ip_str, sizeof(ip_str));
+				} else {
+					inet_ntop(AF_INET, &cn_ptr->ip.s_addr, ip_str, sizeof(ip_str));
+				}
+				fprintf(fp,"    compute %s %u %u %u %u %u %u %u\n",ip_str,
+						cn_ptr->cpu_num,
+						cn_ptr->ephemeral_storage,
+						cn_ptr->hugepages_1gi,
+						cn_ptr->hugepages_2mi,
+						cn_ptr->mem_size,
+						cn_ptr->pods,
+						cn_ptr->delay_time);
+				cn_ptr = cn_ptr->next;
+			}
+			be_ptr = be_ptr->next;
+		}
+		fprintf(fp,"end");
+		fclose(fp);
+	}
+}
+
+/* Get compute gw attribute of the update message. */
+static bgp_attr_parse_ret_t bgp_attr_compute_gw(struct bgp_attr_parser_args *args, struct bgp_extra_info **be_ptr_save)
+{
+	struct peer *const peer = args->peer;
+	struct bgp_extra_info *be_ptr_tmp = NULL;
+	struct bgp_extra_info *be_ptr;
+	struct bgp_compute_node *cn_ptr;
+	struct in_addr gw_ip;
+	char gw_ip_str[INET_ADDRSTRLEN];
+	bgp_size_t length = args->length;
+	int subtrahend;
+
+	/* init */
+	memset(gw_ip_str, 0, sizeof(char) * INET_ADDRSTRLEN);
+
+	/* Fetch compute gw attribute. */
+	gw_ip.s_addr = stream_get_ipv4(BGP_INPUT(peer));
+
+	/* if it is myself */
+	if (gw_ip.s_addr == peer->bgp->router_id.s_addr) {
+		stream_forward_getp(peer->curr, length - 4);
+		return BGP_ATTR_PARSE_PROCEED;
+	}
+	sprintf(gw_ip_str, "%s", inet_ntoa(gw_ip));
+	length -= 4;
+	if (!be_others) {
+		be_others = XCALLOC(MTYPE_BGP_EXTRA_INFO_REMOTE, sizeof(struct bgp_extra_info));
+		memset(be_others, 0, sizeof(struct bgp_extra_info));
+		memcpy(be_others->comp_list_name, gw_ip_str, sizeof(char) * INET_ADDRSTRLEN);
+		be_ptr = be_others;
+	} else {
+		be_ptr = be_others;
+		while(be_ptr) {
+			if (strcmp(be_ptr->comp_list_name, gw_ip_str) == 0) {
+				break;
+			}
+			be_ptr_tmp = be_ptr;
+			be_ptr = be_ptr->next;
+		}
+		if (!be_ptr) {
+			be_ptr_tmp->next = XCALLOC(MTYPE_BGP_EXTRA_INFO_REMOTE, sizeof(struct bgp_extra_info));
+			be_ptr = be_ptr_tmp->next;
+			memset(be_ptr, 0, sizeof(struct bgp_extra_info));
+			memcpy(be_ptr->comp_list_name, gw_ip_str, sizeof(char) * INET_ADDRSTRLEN);
+		}
+	}
+
+	// save be_ptr to save nexthop outside
+	*be_ptr_save = be_ptr;
+
+	// free cn_head first
+	if(be_ptr->cn_head) {
+		cn_free(be_ptr->cn_head);
+		be_ptr->cn_head = NULL;
+	}
+	if (length == 0) {
+		// update with delete all, just return
+		return BGP_ATTR_PARSE_PROCEED;
+	}
+
+	// TODO: add dealy?
+	be_ptr->cn_head = XCALLOC(MTYPE_COMPUTE_NODE_INFO_REMOTE, sizeof(struct bgp_compute_node));
+	cn_ptr = be_ptr->cn_head;
+	while(length >= 21) {
+		memset(cn_ptr, 0, sizeof(struct bgp_compute_node));
+		cn_ptr->is_ipv6 = stream_getc(BGP_INPUT(peer));
+		if (cn_ptr->is_ipv6) {
+			stream_get(&cn_ptr->ipv6, BGP_INPUT(peer), IPV6_MAX_BYTELEN);
+			subtrahend = 33;
+		} else {
+			cn_ptr->ip.s_addr = stream_get_ipv4(BGP_INPUT(peer));
+			subtrahend = 21;
+		}
+		cn_ptr->cpu_num = stream_getc(BGP_INPUT(peer));
+		cn_ptr->ephemeral_storage = stream_getl(BGP_INPUT(peer));
+		cn_ptr->hugepages_1gi = stream_getw(BGP_INPUT(peer));
+		cn_ptr->hugepages_2mi = stream_getw(BGP_INPUT(peer));
+		cn_ptr->mem_size = stream_getl(BGP_INPUT(peer));
+		cn_ptr->pods = stream_getc(BGP_INPUT(peer));
+		cn_ptr->delay_time = stream_getw(BGP_INPUT(peer));
+		length -= subtrahend;
+		if(length < 21 && length > 0) {
+			flog_err(EC_BGP_ATTR_LEN,
+					"Compute gw attribute parse error");
+					return bgp_attr_malformed(args, BGP_NOTIFY_UPDATE_ATTR_LENG_ERR,args->total);
+		}
+		if(length) {
+			cn_ptr->next = XCALLOC(MTYPE_COMPUTE_NODE_INFO_REMOTE, sizeof(struct bgp_compute_node));
+			cn_ptr = cn_ptr->next;
+		}
+	}
+
+	return BGP_ATTR_PARSE_PROCEED;
 }
 
 /* Get origin attribute of the update message. */
@@ -3150,6 +3294,8 @@ bgp_attr_parse_ret_t bgp_attr_parse(struct peer *peer, struct attr *attr,
 	struct aspath *as4_path = NULL;
 	as_t as4_aggregator = 0;
 	struct in_addr as4_aggregator_addr = {.s_addr = 0};
+	struct bgp_extra_info *be_ptr = NULL;
+	char remote_ip[PREFIX2STR_BUFFER];
 	struct transit *transit;
 
 	/* Initialize bitmap. */
@@ -3370,6 +3516,9 @@ bgp_attr_parse_ret_t bgp_attr_parse(struct peer *peer, struct attr *attr,
 		case BGP_ATTR_PMSI_TUNNEL:
 			ret = bgp_attr_pmsi_tunnel(&attr_args);
 			break;
+		case BGP_ATTR_COMPUTE_GW:
+			ret = bgp_attr_compute_gw(&attr_args, &be_ptr);
+			break;
 		case BGP_ATTR_IPV6_EXT_COMMUNITIES:
 			ret = bgp_attr_ipv6_ext_communities(&attr_args);
 			break;
@@ -3487,6 +3636,21 @@ bgp_attr_parse_ret_t bgp_attr_parse(struct peer *peer, struct attr *attr,
 				BGP_NOTIFY_UPDATE_MAL_ATTR);
 		ret = BGP_ATTR_PARSE_ERROR;
 		goto done;
+	}
+
+	/* COMPUTE GW : save nexthop */
+	if(be_ptr) {
+		memset(be_ptr->nexthop,0,sizeof(char) * INET6_ADDRSTRLEN);
+		if (attr->flag & ATTR_FLAG_BIT(BGP_ATTR_NEXT_HOP)) {
+			inet_ntop(AF_INET, &attr->nexthop, be_ptr->nexthop, sizeof(be_ptr->nexthop));
+		} else if (attr->flag & ATTR_FLAG_BIT(BGP_ATTR_MP_REACH_NLRI)) {
+			inet_ntop(AF_INET6, &attr->mp_nexthop_global, be_ptr->nexthop, sizeof(be_ptr->nexthop));
+		} else {
+			sprintf(be_ptr->nexthop,"Unknown");
+		}
+        sockunion2str(peer->su_remote, remote_ip,
+                              SU_ADDRSTRLEN);
+        be_save(remote_ip);
 	}
 
 	/*
@@ -3899,11 +4063,14 @@ bgp_size_t bgp_packet_attribute(struct bgp *bgp, struct peer *peer,
 {
 	size_t cp;
 	size_t aspath_sizep;
+	size_t cga_pos;
 	struct aspath *aspath;
 	int send_as4_path = 0;
 	int send_as4_aggregator = 0;
 	bool use32bit = CHECK_FLAG(peer->cap, PEER_CAP_AS4_RCV)
 			&& CHECK_FLAG(peer->cap, PEER_CAP_AS4_ADV);
+	int cga_total_len;
+	struct bgp_compute_node *cn_ptr;
 
 	if (!bgp)
 		bgp = peer->bgp;
@@ -4387,6 +4554,44 @@ bgp_size_t bgp_packet_attribute(struct bgp *bgp, struct peer *peer,
 
 	if (transit)
 		stream_put(s, transit->val, transit->length);
+
+	/* COMPUTE GW attribute(cga). */
+	if ((attr->flag & ATTR_FLAG_BIT(BGP_ATTR_COMPUTE_GW))
+			&& be_head) {
+		stream_putc(s, BGP_ATTR_FLAG_OPTIONAL | BGP_ATTR_FLAG_TRANS | BGP_ATTR_FLAG_EXTLEN);
+		stream_putc(s, BGP_ATTR_COMPUTE_GW);
+		// storage the length position and set DUMMY length for now
+		cga_pos = stream_get_endp(s);
+		cga_total_len = 0;
+		stream_putw(s, 0);
+		// put BGP's router-id as gatewayip
+		cga_total_len += stream_put_in_addr(s, &bgp->router_id);
+		if (be_head->cn_head) {
+			// put ip, cpu_num, mem_size, delay_time and others
+			cn_ptr = be_head->cn_head;
+			while(cn_ptr) {
+				cga_total_len += stream_putc(s, cn_ptr->is_ipv6);
+				if (cn_ptr->is_ipv6) {
+					stream_put(s, &cn_ptr->ipv6, IPV6_MAX_BYTELEN);
+					cga_total_len += IPV6_MAX_BYTELEN;
+				} else {
+					cga_total_len += stream_put_in_addr(s, &cn_ptr->ip);
+				}
+				cga_total_len += stream_putc(s, cn_ptr->cpu_num);
+				cga_total_len += stream_putl(s, cn_ptr->ephemeral_storage);
+				cga_total_len += stream_putw(s, cn_ptr->hugepages_1gi);
+				cga_total_len += stream_putw(s, cn_ptr->hugepages_2mi);
+				cga_total_len += stream_putl(s, cn_ptr->mem_size);
+				cga_total_len += stream_putc(s, cn_ptr->pods);
+				cga_total_len += stream_putw(s, cn_ptr->delay_time);
+				cn_ptr = cn_ptr->next;
+			}
+		}
+		// set length
+		stream_putw_at(s, cga_pos, cga_total_len);
+		// set update to false
+		need_update = false;
+	}
 
 	/* Return total size of attribute. */
 	return stream_get_endp(s) - cp;

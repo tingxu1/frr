@@ -1537,6 +1537,13 @@ static struct cmd_node rpki_node = {
 };
 #endif /* HAVE_BGPD */
 
+static struct cmd_node compute_node = {
+	.name = "compute",
+	.node = COMPUTE_NODE,
+	.parent_node = CONFIG_NODE,
+	.prompt = "%s(comp-list)# ",
+};
+
 #if HAVE_BFDD > 0
 static struct cmd_node bfd_node = {
 	.name = "bfd",
@@ -3700,6 +3707,18 @@ DEFUN_HIDDEN(show_cli_graph_vtysh,
 	return CMD_SUCCESS;
 }
 
+/* COMPUTE GW */
+DEFUNSH(VTYSH_BGPD,
+        compute_list,
+        compute_list_cmd,
+        "compute-list WORD",
+        "add a compute-list\n"
+        "compute-list's name\n")
+{
+	vty->node = COMPUTE_NODE;
+	return CMD_SUCCESS;
+}
+
 static void vtysh_install_default(enum node_type node)
 {
 	_install_element(node, &config_list_cmd);
@@ -4128,6 +4147,12 @@ void vtysh_init_vty(void)
 	install_element(BGP_SRV6_NODE, &quit_bgp_srv6_cmd);
 	install_element(BGP_SRV6_NODE, &vtysh_end_all_cmd);
 #endif /* HAVE_BGPD */
+	/* COMPUTE GW */
+	install_node(&compute_node);
+	install_element(CONFIG_NODE, &compute_list_cmd);
+	install_element(COMPUTE_NODE, &vtysh_end_all_cmd);
+	install_element(COMPUTE_NODE, &vtysh_exit_all_cmd);
+	install_element(COMPUTE_NODE, &vtysh_quit_all_cmd);
 
 	/* ripd */
 	install_node(&rip_node);

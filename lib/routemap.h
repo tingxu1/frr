@@ -339,6 +339,8 @@ DECLARE_QOBJ_TYPE(route_map);
 	(strmatch(A, "frr-bgp-route-map:set-local-preference"))
 #define IS_SET_LABEL_INDEX(A)                                                  \
 	(strmatch(A, "frr-bgp-route-map:label-index"))
+#define IS_SET_COMP_LIST(A)                                                    \
+	(strmatch(A, "frr-bgp-route-map:comp-list"))
 #define IS_SET_DISTANCE(A)                                                     \
 	(strmatch(A, "frr-bgp-route-map:distance"))
 #define IS_SET_ORIGIN(A)                                                       \

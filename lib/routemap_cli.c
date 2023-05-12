@@ -1067,6 +1067,11 @@ void route_map_action_show(struct vty *vty, const struct lyd_node *dnode,
 			yang_dnode_get_string(
 				dnode,
 				"./rmap-set-action/frr-bgp-route-map:label-index"));
+	} else if (IS_SET_COMP_LIST(action)) {
+		vty_out(vty, " set comp-list %s\n",
+			yang_dnode_get_string(
+				dnode,
+				"./rmap-set-action/frr-bgp-route-map:comp-list"));
 	} else if (IS_SET_DISTANCE(action)) {
 		vty_out(vty, " set distance %s\n",
 			yang_dnode_get_string(

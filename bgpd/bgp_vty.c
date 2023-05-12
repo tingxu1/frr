@@ -78,6 +78,9 @@
 #include "bgpd/rfapi/bgp_rfapi_cfg.h"
 #endif
 
+DEFINE_MTYPE_STATIC(BGPD, BGP_EXTRA_INFO, "BGP extra info for compute gw project");
+DEFINE_MTYPE_STATIC(BGPD, COMPUTE_NODE_INFO, "compute node info for compute gw project");
+
 FRR_CFG_DEFAULT_BOOL(BGP_IMPORT_CHECK,
 	{
 		.val_bool = false,
@@ -15796,6 +15799,290 @@ DEFUN (no_bgp_redistribute_ipv4_ospf,
 	return bgp_redistribute_unset(bgp, AFI_IP, protocol, instance);
 }
 
+/* COMPUTE GW */
+DEFUN (neighbor_delay,
+       neighbor_delay_cmd,
+       "neighbor_delay A.B.C.D (0-65535)",
+       "add a neighbor_delay record\n"
+       "IP address\n"
+       "Delay time\n")
+{
+	int ret;
+	int idx_ip = 1;
+	int idx_delay = 2;
+	int delay_time;
+	struct in_addr address;
+	ret = inet_aton(argv[idx_ip]->arg, &address);
+	if (ret == 0) {
+		vty_out(vty, "IP address is invalid\n");
+		return CMD_WARNING_CONFIG_FAILED;
+	}
+	delay_time = strtoul(argv[idx_delay]->arg,NULL,10);
+	vty_out(vty, "neighbor_delay_cmd : %u  %u \n", address.s_addr, delay_time);
+	return CMD_SUCCESS;
+}
+
+DEFUN_NOSH (compute_list,
+            compute_list_cmd,
+            "compute-list WORD",
+            "add a compute-list\n"
+            "compute-list's name\n")
+{
+	struct cmd_token *word = argv[1];
+	if (!be_head) {
+		be_head = XCALLOC(MTYPE_BGP_EXTRA_INFO, sizeof(struct bgp_extra_info));
+		memset(be_head, 0, sizeof(struct bgp_extra_info));
+		memcpy(be_head->comp_list_name, word->arg, strlen(word->arg) * sizeof(char));
+	} else {
+		if (strcmp(be_head->comp_list_name, word->arg)) {
+			vty_out(vty, "comp_list_name mismatch! should be \"%s\" though it doesn't affect anything for now, so ignore it\n", word->arg);
+		}
+	}
+	vty->node = COMPUTE_NODE;
+	return CMD_SUCCESS;
+}
+
+DEFUN (comp_list_ip,
+       comp_list_ip_cmd,
+       "compute <A.B.C.D|X:X::X:X> (0-255) (0-4294967295) (0-65535) (0-65535) (0-4294967295) (0-255) (0-65535)",
+       "add a compute node ip\n"
+       "ipaddress\n"
+	   "ipv6address\n"
+       "CPU num\n"
+       "ephemeral_storage\n"
+       "hugepages_1gi\n"
+       "hugepages_2mi\n"
+       "MEM size(MB)\n"
+	   "pods\n"
+       "DELAY time(ms)\n")
+{
+	int ret;
+	int idx_ip = 1;
+	int idx_cpu = 2;
+	int idx_storage = 3;
+	int idx_huge_1gi = 4;
+	int idx_huge_1mi = 5;
+	int idx_mem = 6;
+	int idx_pods = 7;
+	int idx_delay = 8;
+
+	struct in_addr ip;
+	struct in6_addr ipv6;
+	uint8_t is_ipv6 = 0;
+	uint8_t cpu_num;
+	uint32_t storage;
+	uint16_t huge_1gi;
+	uint16_t huge_2mi;
+	uint32_t mem_size;
+	uint8_t pods;
+	uint16_t delay_time;
+	struct bgp_compute_node *cn_ptr;
+	struct bgp_compute_node *cn_tmp = NULL;
+
+	/* get value and only ip_address neeed to check, others will always be correct after vtysh's check */
+	if (argv_find(argv, argc, "X:X::X:X", &idx_ip)) {
+		is_ipv6 = 1;
+	}
+	if (is_ipv6) {
+		ret = inet_pton(AF_INET6, argv[idx_ip]->arg, (void*)&ipv6);
+	} else {
+		ret = inet_aton(argv[idx_ip]->arg, &ip);
+	}
+	if (ret == 0) {
+		vty_out(vty, "IP address is invalid\n");
+		return CMD_WARNING_CONFIG_FAILED;
+	}
+	cpu_num = (uint8_t)strtoul(argv[idx_cpu]->arg,NULL,10);
+	storage = strtoul(argv[idx_storage]->arg,NULL,10);
+	huge_1gi = (uint16_t)strtoul(argv[idx_huge_1gi]->arg,NULL,10);
+	huge_2mi = (uint16_t)strtoul(argv[idx_huge_1mi]->arg,NULL,10);
+	mem_size = strtoul(argv[idx_mem]->arg,NULL,10);
+	pods = (uint8_t)strtoul(argv[idx_pods]->arg,NULL,10);
+	delay_time = (uint16_t)strtoul(argv[idx_delay]->arg,NULL,10);
+
+	if (!be_head->cn_head) {
+		// first record
+		be_head->cn_head = XCALLOC(MTYPE_COMPUTE_NODE_INFO, sizeof(struct bgp_compute_node));
+		memset(be_head->cn_head, 0, sizeof(struct bgp_compute_node));
+		cn_ptr = be_head->cn_head;
+	} else {
+		cn_ptr = be_head->cn_head;
+		while(cn_ptr) {
+			if( ((is_ipv6 == 0) && (cn_ptr->ip.s_addr == ip.s_addr)) ||
+				((is_ipv6 == 1) && (IPV6_ADDR_SAME(&cn_ptr->ipv6,&ipv6)))) {
+				if (cn_ptr->cpu_num == cpu_num &&
+						cn_ptr->ephemeral_storage == storage &&
+						cn_ptr->hugepages_1gi == huge_1gi &&
+						cn_ptr->hugepages_2mi == huge_2mi &&
+						cn_ptr->mem_size == mem_size &&
+						cn_ptr->pods == pods &&
+						cn_ptr->delay_time == delay_time) {
+					return CMD_SUCCESS;
+				} else {
+					need_update = true;
+					cn_ptr->cpu_num = cpu_num;
+					cn_ptr->ephemeral_storage = storage;
+					cn_ptr->hugepages_1gi = huge_1gi;
+					cn_ptr->hugepages_2mi = huge_2mi;
+					cn_ptr->mem_size = mem_size;
+					cn_ptr->pods = pods;
+					cn_ptr->delay_time = delay_time;
+					return CMD_SUCCESS;
+				}
+			}
+			cn_tmp = cn_ptr;
+			cn_ptr = cn_ptr->next;
+		}
+		cn_tmp->next = XCALLOC(MTYPE_COMPUTE_NODE_INFO, sizeof(struct bgp_compute_node));
+		memset(cn_tmp->next, 0, sizeof(struct bgp_compute_node));
+		cn_ptr = cn_tmp->next;
+	}
+	cn_ptr->is_ipv6 = is_ipv6;
+	if (is_ipv6) {
+		IPV6_ADDR_COPY(&cn_ptr->ipv6, &ipv6);
+	} else {
+		cn_ptr->ip = ip;
+	}
+	cn_ptr->cpu_num = cpu_num;
+	cn_ptr->ephemeral_storage = storage;
+	cn_ptr->hugepages_1gi = huge_1gi;
+	cn_ptr->hugepages_2mi = huge_2mi;
+	cn_ptr->mem_size = mem_size;
+	cn_ptr->pods = pods;
+	cn_ptr->delay_time = delay_time;
+	need_update = true;
+
+	return CMD_SUCCESS;
+}
+
+DEFUN (no_comp_list_ip,
+       no_comp_list_ip_cmd,
+       "no compute <A.B.C.D|X:X::X:X>",
+       NO_STR
+       "add a compute node ip\n"
+       "ipaddress\n"
+       "ipv6address\n")
+{
+	int ret;
+	int idx_ip = 2;
+	uint8_t is_ipv6 = 0;
+	struct in_addr ip;
+	struct in6_addr ipv6;
+	struct bgp_compute_node *cn_ptr;
+	struct bgp_compute_node *cn_ptr_tmp;
+
+	if (argv_find(argv, argc, "X:X::X:X", &idx_ip)) {
+		is_ipv6 = 1;
+	}
+	if (is_ipv6) {
+		ret = inet_pton(AF_INET6, argv[idx_ip]->arg, (void*)&ipv6);
+	} else {
+		ret = inet_aton(argv[idx_ip]->arg, &ip);
+	}
+	if (ret == 0) {
+		vty_out(vty, "IP address is invalid\n");
+		return CMD_WARNING_CONFIG_FAILED;
+	}
+	// not found
+	if (!be_head->cn_head) {
+		vty_out(vty, "delete nothing!\n");
+		return CMD_SUCCESS;
+	}
+	// find and delete
+	cn_ptr = be_head->cn_head;
+	if (((is_ipv6 == 0) && cn_ptr->ip.s_addr == ip.s_addr) ||
+		((is_ipv6 == 1) && IPV6_ADDR_SAME(&cn_ptr->ipv6, &ipv6))) {
+		cn_ptr_tmp = cn_ptr;
+		be_head->cn_head = cn_ptr->next;
+		XFREE(MTYPE_COMPUTE_NODE_INFO, cn_ptr_tmp);
+		need_update = true;
+		vty_out(vty, "delete one!\n");
+		return CMD_SUCCESS;
+	}
+	while(cn_ptr->next) {
+		cn_ptr_tmp = cn_ptr;
+		cn_ptr = cn_ptr->next;
+		if (((is_ipv6 == 0) && cn_ptr->ip.s_addr == ip.s_addr) ||
+			((is_ipv6 == 1) && IPV6_ADDR_SAME(&cn_ptr->ipv6, &ipv6))) {
+			cn_ptr_tmp->next = cn_ptr->next;
+			XFREE(MTYPE_COMPUTE_NODE_INFO, cn_ptr);
+			need_update = true;
+			vty_out(vty, "delete one!\n");
+			return CMD_SUCCESS;
+		}
+	}
+	// finally not found
+	vty_out(vty, "delete nothing!\n");
+	return CMD_SUCCESS;
+}
+
+DEFUN (comp_list_show_all,
+       comp_list_show_all_cmd,
+       "compute-show-all",
+       "show all comp-list!\n")
+{
+	struct bgp_extra_info *be_ptr = be_head;
+	struct bgp_compute_node *cn_ptr;
+	char ip_str[INET6_ADDRSTRLEN];
+	/* show local */
+	if (!be_ptr) {
+		vty_out(vty,"local empty!\n");
+		return CMD_SUCCESS;
+	}
+	while(be_ptr) {
+		vty_out(vty,"comp-list %s (%s at %p)\n",be_ptr->comp_list_name, need_update ? "need_update" : "no need_update", be_ptr);
+		cn_ptr = be_ptr->cn_head;
+		while(cn_ptr) {
+			memset(ip_str, 0, sizeof(char) * INET6_ADDRSTRLEN);
+			if (cn_ptr->is_ipv6) {
+				inet_ntop(AF_INET6, &cn_ptr->ipv6.s6_addr, ip_str, sizeof(ip_str));
+			} else {
+				inet_ntop(AF_INET, &cn_ptr->ip.s_addr, ip_str, sizeof(ip_str));
+			}
+			vty_out(vty,"    compute %s %u %u %u %u %u %u %u\n",ip_str,
+					cn_ptr->cpu_num,
+					cn_ptr->ephemeral_storage,
+					cn_ptr->hugepages_1gi,
+					cn_ptr->hugepages_2mi,
+					cn_ptr->mem_size,
+					cn_ptr->pods,
+					cn_ptr->delay_time);
+			cn_ptr = cn_ptr->next;
+		}
+		be_ptr = be_ptr->next;
+	}
+
+	be_ptr = be_others;
+	/* show non-local */
+	if (!be_ptr) {
+		vty_out(vty,"peers empty!\n");
+		return CMD_SUCCESS;
+	}
+	while(be_ptr) {
+		vty_out(vty,"comp-list %s nexthop %s (at %p)\n",be_ptr->comp_list_name, be_ptr->nexthop, be_ptr);
+		cn_ptr = be_ptr->cn_head;
+		while(cn_ptr) {
+			memset(ip_str, 0, sizeof(char) * INET6_ADDRSTRLEN);
+			if (cn_ptr->is_ipv6) {
+				inet_ntop(AF_INET6, &cn_ptr->ipv6.s6_addr, ip_str, sizeof(ip_str));
+			} else {
+				inet_ntop(AF_INET, &cn_ptr->ip.s_addr, ip_str, sizeof(ip_str));
+			}
+			vty_out(vty,"    compute %s %u %u %u %u %u %u %u\n",ip_str,
+					cn_ptr->cpu_num,
+					cn_ptr->ephemeral_storage,
+					cn_ptr->hugepages_1gi,
+					cn_ptr->hugepages_2mi,
+					cn_ptr->mem_size,
+					cn_ptr->pods,
+					cn_ptr->delay_time);
+			cn_ptr = cn_ptr->next;
+		}
+		be_ptr = be_ptr->next;
+	}
+	return CMD_SUCCESS;
+}
+
 ALIAS_HIDDEN(
 	no_bgp_redistribute_ipv4_ospf, no_bgp_redistribute_ipv4_ospf_hidden_cmd,
 	"no redistribute <ospf|table> (1-65535) [{metric (0-4294967295)|route-map WORD}]",
@@ -17570,6 +17857,13 @@ static struct cmd_node bgp_srv6_node = {
 	.prompt = "%s(config-router-srv6)# ",
 };
 
+static struct cmd_node compute_node = {
+	.name = "compute",
+	.node = COMPUTE_NODE,
+	.parent_node = CONFIG_NODE,
+	.prompt = "%s(comp-list)# ",
+};
+
 static void community_list_vty(void);
 
 static void bgp_ac_peergroup(vector comps, struct cmd_token *token)
@@ -17640,6 +17934,7 @@ void bgp_vty_init(void)
 
 	/* Install bgp top node. */
 	install_node(&bgp_node);
+	install_node(&compute_node);
 	install_node(&bgp_ipv4_unicast_node);
 	install_node(&bgp_ipv4_multicast_node);
 	install_node(&bgp_ipv4_labeled_unicast_node);
@@ -17656,6 +17951,7 @@ void bgp_vty_init(void)
 
 	/* Install default VTY commands to new nodes.  */
 	install_default(BGP_NODE);
+	install_default(COMPUTE_NODE);
 	install_default(BGP_IPV4_NODE);
 	install_default(BGP_IPV4M_NODE);
 	install_default(BGP_IPV4L_NODE);
@@ -17669,6 +17965,14 @@ void bgp_vty_init(void)
 	install_default(BGP_EVPN_NODE);
 	install_default(BGP_EVPN_VNI_NODE);
 	install_default(BGP_SRV6_NODE);
+
+	/* COMPUTE GW */
+	install_element(CONFIG_NODE, &neighbor_delay_cmd);
+
+	install_element(CONFIG_NODE, &compute_list_cmd);
+	install_element(COMPUTE_NODE, &comp_list_ip_cmd);
+	install_element(COMPUTE_NODE, &no_comp_list_ip_cmd);
+	install_element(COMPUTE_NODE, &comp_list_show_all_cmd);
 
 	/* "bgp local-mac" hidden commands. */
 	install_element(CONFIG_NODE, &bgp_local_mac_cmd);

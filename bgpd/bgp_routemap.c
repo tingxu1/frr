@@ -3037,6 +3037,37 @@ static const struct route_map_rule_cmd route_set_label_index_cmd = {
 	route_value_free,
 };
 
+/* comp-list SET FUNC */
+static enum route_map_cmd_result_t
+route_set_comp_list(void *rule, const struct prefix *prefix, void *object)
+{
+	struct bgp_path_info *path;
+	struct attr *attr;
+	path = object;
+	attr = path->attr;
+	attr->flag |= ATTR_FLAG_BIT(BGP_ATTR_COMPUTE_GW);
+	return RMAP_OKAY;
+}
+
+/* comp-list COMPILE FUNC */
+static void *route_set_comp_list_compile(const char *arg)
+{
+	int len = strlen(arg)*sizeof(const char);
+	char * rv;
+	rv = XMALLOC(MTYPE_ROUTE_MAP_COMPILED, len+1);
+	memset(rv, 0, len+1);
+	memcpy(rv, arg, len);
+	return rv;
+}
+
+/* Route map commands for comp-list set. */
+static struct route_map_rule_cmd route_set_comp_list_cmd = {
+	"comp-list",
+	route_set_comp_list,
+	route_set_comp_list_compile,
+	route_value_free,
+};
+
 /* `match ipv6 address IP_ACCESS_LIST' */
 
 static enum route_map_cmd_result_t
@@ -5299,6 +5330,40 @@ DEFUN_YANG (no_set_weight,
 	return nb_cli_apply_changes(vty, NULL);
 }
 
+DEFUN_YANG (set_comp_list,
+       set_comp_list_cmd,
+       "set comp-list WORD",
+       SET_STR
+       "set Compute resource list name\n"
+       "list name\n")
+{
+	int idx_comp_list_name = 2;
+	const char *xpath = "./set-action[action='frr-bgp-route-map:comp-list']";
+	char xpath_value[XPATH_MAXLEN];
+
+	nb_cli_enqueue_change(vty, xpath, NB_OP_CREATE, NULL);
+	snprintf(xpath_value, sizeof(xpath_value),
+		 "%s/rmap-set-action/frr-bgp-route-map:comp-list", xpath);
+	nb_cli_enqueue_change(vty, xpath_value, NB_OP_MODIFY,
+			      argv[idx_comp_list_name]->arg);
+	return nb_cli_apply_changes(vty, NULL);
+}
+
+DEFUN_YANG (no_set_comp_list,
+       no_set_comp_list_cmd,
+       "no set comp-list WORD",
+       NO_STR
+       SET_STR
+       "set Compute resource list name\n"
+       "list name\n")
+{
+	const char *xpath =
+		"./set-action[action='frr-bgp-route-map:comp-list']";
+
+	nb_cli_enqueue_change(vty, xpath, NB_OP_DESTROY, NULL);
+	return nb_cli_apply_changes(vty, NULL);
+}
+
 DEFUN_YANG (set_label_index,
 	    set_label_index_cmd,
 	    "set label-index (0-1048560)",
@@ -6738,6 +6803,8 @@ void bgp_route_map_init(void)
 	route_map_install_set(&route_set_ecommunity_none_cmd);
 	route_map_install_set(&route_set_tag_cmd);
 	route_map_install_set(&route_set_label_index_cmd);
+	/* COMPUTE GW */
+	route_map_install_set(&route_set_comp_list_cmd);
 
 	install_element(RMAP_NODE, &match_peer_cmd);
 	install_element(RMAP_NODE, &match_peer_local_cmd);
@@ -6867,6 +6934,10 @@ void bgp_route_map_init(void)
 	install_element(RMAP_NODE, &no_set_ipv6_nexthop_prefer_global_cmd);
 	install_element(RMAP_NODE, &set_ipv6_nexthop_peer_cmd);
 	install_element(RMAP_NODE, &no_set_ipv6_nexthop_peer_cmd);
+	/* COMPUTE GW */
+	install_element(RMAP_NODE, &set_comp_list_cmd);
+	install_element(RMAP_NODE, &no_set_comp_list_cmd);
+
 #ifdef HAVE_SCRIPTING
 	install_element(RMAP_NODE, &match_script_cmd);
 #endif

@@ -106,6 +106,11 @@ static struct bgp_master bgp_master;
 /* BGP process wide configuration pointer to export.  */
 struct bgp_master *bm;
 
+/* COMPUTE GW pointer to export */
+struct bgp_extra_info *be_head;
+struct bgp_extra_info *be_others;
+bool need_update;
+
 /* BGP community-list.  */
 struct community_list_handler *bgp_clist;
 
@@ -7798,6 +7803,13 @@ char *peer_uptime(time_t uptime2, char *buf, size_t len, bool use_json,
 	}
 
 	return buf;
+}
+
+void bgp_extra_infos_init(void) {
+	be_head = NULL;
+	be_others = NULL;
+	need_update = false;
+	return;
 }
 
 void bgp_master_init(struct thread_master *master, const int buffer_size,

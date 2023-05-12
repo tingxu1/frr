@@ -551,6 +551,7 @@ class Config(object):
             "pbr-map ": {},
             "rpki": {},
             "bfd": {"peer ": {}, "profile ": {}},
+            "compute-list": {"compute ": {}, "compute-show-all ": {}},
             "line vty": {},
         }
 

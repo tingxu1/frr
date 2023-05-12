@@ -175,6 +175,33 @@ struct bgp_master {
 };
 DECLARE_QOBJ_TYPE(bgp_master);
 
+/* COMPUTE GW */
+struct bgp_compute_node {
+	bool is_ipv6;
+	struct in_addr ip;
+	struct in6_addr ipv6;
+	uint8_t cpu_num;
+	uint32_t ephemeral_storage;
+	uint16_t hugepages_1gi;
+	uint16_t hugepages_2mi;
+	uint32_t mem_size;
+	uint8_t pods;
+	uint16_t delay_time;
+	struct bgp_compute_node* next;
+};
+
+struct bgp_extra_info {
+	char comp_list_name[INET_ADDRSTRLEN];
+	char nexthop[INET6_ADDRSTRLEN];
+	struct bgp_compute_node *cn_head;
+	struct bgp_extra_info *next;
+};
+
+extern struct bgp_extra_info *be_head;
+extern struct bgp_extra_info *be_others;
+extern struct bgp_extra_info *be_now;
+extern bool need_update;
+
 /* BGP route-map structure.  */
 struct bgp_rmap {
 	char *name;
@@ -1784,6 +1811,7 @@ struct bgp_nlri {
 #define BGP_ATTR_LARGE_COMMUNITIES              32
 #define BGP_ATTR_PREFIX_SID                     40
 #define BGP_ATTR_SRTE_COLOR                     51
+#define BGP_ATTR_COMPUTE_GW                     64
 #ifdef ENABLE_BGP_VNC_ATTR
 #define BGP_ATTR_VNC                           255
 #endif
@@ -2039,6 +2067,7 @@ extern char *peer_uptime(time_t uptime2, char *buf, size_t len, bool use_json,
 			 json_object *json);
 
 extern int bgp_config_write(struct vty *);
+extern void bgp_extra_infos_init(void);
 
 extern void bgp_master_init(struct thread_master *master, const int buffer_size,
 			    struct list *addresses);
